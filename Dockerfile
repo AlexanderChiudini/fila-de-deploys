@@ -6,17 +6,16 @@ COPY vite.config.js ./
 COPY resources ./resources
 RUN npm run build
 
-FROM php:8.4-cli-alpine
-RUN apk add --no-cache icu-dev libzip-dev sqlite-dev postgresql-dev oniguruma-dev \
-    && docker-php-ext-install intl zip pdo_sqlite pdo_pgsql pdo_mysql mbstring bcmath pcntl
-COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+FROM python:3.13-slim
 WORKDIR /app
-COPY . .
-RUN composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction \
-    && mkdir -p /data storage/framework/cache/data storage/framework/sessions storage/framework/views storage/logs bootstrap/cache \
-    && chown -R www-data:www-data /app /data
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+COPY app.py ./
+COPY resources/views/queue.html ./resources/views/queue.html
 COPY --from=frontend /app/public/build ./public/build
-USER www-data
-ENV APP_ENV=production APP_DEBUG=false LOG_CHANNEL=stderr SESSION_DRIVER=file CACHE_STORE=file QUEUE_CONNECTION=sync DB_CONNECTION=sqlite DB_DATABASE=/data/database.sqlite
+COPY --from=frontend /app/resources/views/assets.json ./resources/views/assets.json
+RUN useradd --create-home queue && mkdir -p /data && chown queue:queue /data
+USER queue
+ENV DATABASE_URL=sqlite:////data/database.sqlite
 EXPOSE 8080
-CMD ["sh", "docker/start.sh"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "app:app"]

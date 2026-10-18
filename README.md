@@ -1,77 +1,90 @@
 # Deploy Queue
 
-Fila compartilhada com **Laravel 13 (PHP 8.3+) e Vue 3**. Interface em português, responsiva, com cadastro de responsável, squad e URL; status `aguardando`, `em andamento` e `finalizado`; busca, filtros, contadores e atualização automática a cada 10 segundos. Banco real compartilhado entre visitantes; sem login.
+Fila compartilhada com **Python 3.13, Flask e Vue 3**, preparada para Vercel. Mantém a interface em português, busca, filtros, contadores por status, atualização a cada 10 segundos, observações, reordenação, exclusão individual e limpeza de finalizados. As notificações opcionais do Google Chat continuam sendo enviadas somente na transição para finalizado; falhas no webhook não desfazem a alteração.
 
 ## Executar localmente
 
-Requisitos: PHP 8.3+ com extensões do Laravel e PDO SQLite, Composer 2 e Node.js 22.
+Requisitos: Python 3.13 e Node.js 22.
 
 ```sh
-composer install
-cp .env.example .env
-php artisan key:generate
+python -m venv .venv
 ```
 
-No Windows, use `Copy-Item .env.example .env` para copiar o arquivo. Crie `database/database.sqlite` vazio (`New-Item database/database.sqlite -ItemType File` no PowerShell ou `touch database/database.sqlite` no Linux).
+Ative o ambiente: `.venv\Scripts\Activate.ps1` no PowerShell ou `source .venv/bin/activate` no Linux/macOS.
 
 ```sh
-php artisan migrate
+pip install -r requirements.txt
+```
+
+Copie `.env.example` para `.env` (`Copy-Item .env.example .env` no Windows). Gere uma chave com `python -c "import secrets; print(secrets.token_hex(32))"` e coloque em `SECRET_KEY`.
+
+```sh
 npm ci
 npm run build
-php artisan serve
+python app.py
 ```
 
-Abra http://localhost:8000. Para desenvolver o Vue, rode `npm run dev` em outro terminal.
+Abra http://localhost:8000. A tabela é criada automaticamente no primeiro acesso à API. O SQLite existente em `database/database.sqlite` é reutilizado, preservando seus registros. O `.env` antigo também funciona localmente: `APP_KEY` é aceito como alternativa a `SECRET_KEY`. A aplicação Python não depende de PHP, Composer ou Artisan. Após editar a interface, rode `npm run build` novamente.
 
-## Executar com Docker
+## Publicar na Vercel
 
-Copie `.env.example` para `.env`. Gere uma chave:
+1. Envie as alterações ao seu repositório e importe o projeto na Vercel usando a raiz deste diretório.
+2. Selecione o preset **Flask**. O `vercel.json` configura o build `npm ci && npm run build`; remova eventuais overrides antigos de PHP ou de diretório de saída no painel. O ponto de entrada é `app.py`.
+3. Crie um banco Turso (libSQL/SQLite) e configure `TURSO_DATABASE_URL=libsql://seu-banco.turso.io` e `TURSO_AUTH_TOKEN` com um token de leitura e escrita. Essas variáveis têm prioridade sobre `DATABASE_URL`.
+4. Configure `SECRET_KEY` com uma chave aleatória estável e `APP_URL` com a URL pública. Configure também essas variáveis em Preview caso utilize esse ambiente; prefira um banco separado para Preview.
+5. Para notificações, configure `GOOGLE_CHAT_ENABLED=true` e `GOOGLE_CHAT_WEBHOOK_URL` com seu webhook. Sem essas variáveis, as notificações ficam desativadas.
+6. Publique. `/up` verifica a conexão com o banco. As tabelas são criadas automaticamente no primeiro acesso; o token precisa permitir escrita e criação de tabelas.
+
+```dotenv
+TURSO_DATABASE_URL=libsql://seu-banco.turso.io
+TURSO_AUTH_TOKEN=seu-token
+SECRET_KEY=sua-chave-aleatoria
+APP_URL=https://seu-projeto.vercel.app
+```
+
+A aplicação usa a conexão remota HTTPS do driver oficial `sqlalchemy-libsql`, sem criar réplicas ou arquivos SQLite na Vercel. O banco Turso mantém a fila compartilhada entre instâncias e publicações. Não é necessário PostgreSQL. Remova a antiga variável PostgreSQL `DATABASE_URL` do painel; as variáveis Turso passam a controlar a conexão.
+
+Para obter as credenciais pela CLI do Turso:
 
 ```sh
-docker run --rm php:8.4-cli-alpine php -r "echo 'base64:'.base64_encode(random_bytes(32)).PHP_EOL;"
+turso db show --url nome-do-banco
+turso db tokens create nome-do-banco
 ```
 
-Cole a saída em `APP_KEY` do `.env` e execute:
+Não inclua o token no Git nem em variáveis `VITE_*`: ele é utilizado somente no servidor. Os registros do SQLite local não são enviados automaticamente ao Turso; um banco novo começa vazio.
+
+Sem as variáveis Turso, o desenvolvimento local continua usando `database/database.sqlite`. Para testar com Turso no Windows, use o container Docker: o driver nativo oficial é compatível com Linux/macOS. O arquivo `requirements.txt` instala esse driver nesses ambientes, incluindo a Vercel, e mantém a instalação local Windows com SQLite padrão.
+
+## Docker
+
+Defina `SECRET_KEY` no `.env` e execute:
 
 ```sh
 docker compose up --build -d
 ```
 
-Abra http://localhost:8080. O volume `deploy_data` preserva o SQLite entre reinícios e atualizações. Não remova esse volume se quiser manter os registros.
+Abra http://localhost:8080. O volume `deploy_data` mantém o SQLite em `/data/database.sqlite`. O container usa Python/Gunicorn. Se definir `TURSO_DATABASE_URL` e `TURSO_AUTH_TOKEN` no `.env`, ele conecta ao Turso em vez do arquivo local. Não remova o volume se quiser preservar os registros.
 
-## Publicar em uma URL
+## Uso e API
 
-O Dockerfile permite publicar o projeto em um serviço com containers e volume persistente, como Render ou Railway. O servidor incluído é adequado a uma fila interna de baixo tráfego; para alta demanda use PHP-FPM/Nginx, FrankenPHP ou Laravel Octane.
+Qualquer visitante com a URL pode cadastrar e alterar registros, sem login. O sistema organiza visualmente a fila; não bloqueia deploys simultâneos. Escritas exigem o token CSRF da página e possuem limites compartilhados no banco (60/minuto para POST e DELETE, 120/minuto para PATCH, por IP/método). Atrás de proxies, o limite usa o endereço fornecido pelo servidor WSGI e pode agrupar visitantes. URLs aceitam HTTP/HTTPS. As mutações são serializadas por transação para preservar a ordem da fila.
 
-1. Envie este projeto para um repositório Git.
-2. Crie um serviço Docker apontando para o repositório e para o `Dockerfile` da raiz.
-3. Configure `APP_KEY` (gere como acima), `APP_URL=https://seu-dominio`, `APP_ENV=production` e `APP_DEBUG=false`.
-4. Para SQLite, monte um disco persistente em `/data`, com escrita para o usuário do container. Use apenas uma instância. `DB_CONNECTION=sqlite` e `DB_DATABASE=/data/database.sqlite` já são os padrões do container.
-5. Publique. As migrations rodam automaticamente na inicialização; `/up` é o endpoint de saúde.
+- `GET /api/deployments`: lista por posição e ID.
+- `POST /api/deployments`: responsável (`responsible`), squad, URL, status opcional e observações (`notes`).
+- `PATCH /api/deployments/{id}`: altera somente status e/ou observações.
+- `PATCH /api/deployments/{id}/move`: direção (`direction`) `up`, `down` ou `end`.
+- `DELETE /api/deployments/{id}`: exclui um registro.
+- `DELETE /api/deployments/finished`: exclui os finalizados.
 
-Alternativamente use PostgreSQL gerenciado: configure `DB_CONNECTION=pgsql`, `DB_HOST`, `DB_PORT=5432`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD` e `DB_SSLMODE=require` (conforme o provedor). Nesse caso não é necessário um volume para os registros. Mantenha a mesma `APP_KEY` em novos deploys. Quando estiver atrás de um proxy HTTPS, configure os proxies confiáveis em `bootstrap/app.php` conforme seu provedor, sem confiar indiscriminadamente em qualquer proxy.
-
-### Sobre a Vercel
-
-Este projeto entrega Vue e Laravel na mesma origem, sem CORS. O caminho disponibilizado é Docker: a Vercel não executa esse container PHP diretamente. Hospede o projeto completo em uma plataforma compatível com PHP/Docker. Separar o Vue na Vercel exigiria hospedar a API Laravel em outro serviço e adaptar sessão/CSRF/CORS; essa separação não é necessária para esta aplicação.
-
-## Uso e permissões
-
-Qualquer visitante com a URL pode cadastrar registros e alterar o status de qualquer registro. Sem autenticação, o sistema não verifica quem é o responsável. O responsável usa o seletor de status ao lado do seu deploy. Há proteção CSRF, validação no servidor e limite de requisições de escrita; links aceitam apenas HTTP/HTTPS. Não há bloqueio automático de deploys simultâneos: a fila organiza visualmente os registros em ordem de criação. Se duas pessoas alterarem o mesmo registro ao mesmo tempo, prevalece a última alteração salva.
+Status: `aguardando`, `em andamento`, `finalizado`. Os contadores continuam sendo calculados pelo Vue usando a lista completa, independentemente da busca e do filtro.
 
 ## Verificação
 
 ```sh
-php artisan test
 npm run build
+python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-Testes cobrem cadastro, persistência dos três status, ordem da fila, validação, URLs inválidas, registros inexistentes e proteção dos demais campos durante alteração de status.
+Os testes Python cobrem persistência, concorrência no SQLite, status, observações, ordem, exclusões, validação, CSRF, limite compartilhado e notificações com falhas simuladas. Não enviam mensagens reais. O projeto usa somente Python e Vue; os arquivos e dependências do Laravel foram removidos.
 
-## API (mesma origem, sessão e CSRF)
-
-- `GET /api/deployments`: lista por ordem de criação.
-- `POST /api/deployments`: `responsible`, `squad`, `url`, `status` opcional (padrão `aguardando`).
-- `PATCH /api/deployments/{id}`: altera somente `status`.
-
-As rotas de escrita exigem o token CSRF da página. Dados ficam na tabela `deployments`.
+Os testes também verificam configuração do Turso, credenciais incompletas, proteção contra SQLite efêmero na Vercel e rollback de transações usando SQLite como substituto do banco remoto. A conexão real ao Turso exige suas credenciais e não é exercitada por esses testes.

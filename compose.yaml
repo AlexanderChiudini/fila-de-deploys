@@ -4,8 +4,10 @@ services:
     ports:
       - "8080:8080"
     environment:
-      APP_KEY: ${APP_KEY:?Defina APP_KEY no arquivo .env}
+      SECRET_KEY: ${SECRET_KEY:?Defina SECRET_KEY no arquivo .env}
       APP_URL: ${APP_URL:-http://localhost:8080}
+      TURSO_DATABASE_URL: ${TURSO_DATABASE_URL:-}
+      TURSO_AUTH_TOKEN: ${TURSO_AUTH_TOKEN:-}
       GOOGLE_CHAT_ENABLED: ${GOOGLE_CHAT_ENABLED:-false}
       GOOGLE_CHAT_WEBHOOK_URL: ${GOOGLE_CHAT_WEBHOOK_URL:-}
     volumes:

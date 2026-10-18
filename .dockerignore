@@ -3,9 +3,12 @@
 .env.*
 !.env.example
 node_modules
-vendor
-public/hot
 public/build
-storage/logs/*
+resources/views/assets.json
 database/*.sqlite*
-.toolsbootstrap/cache/*.php
+.runtime
+.venv
+.vercel
+**/__pycache__
+*.pyc
+python-runtime.zip

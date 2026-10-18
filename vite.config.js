@@ -1,7 +1,19 @@
 import { defineConfig } from 'vite';
-import laravel from 'laravel-vite-plugin';
+import { copyFileSync } from 'node:fs';
 import vue from '@vitejs/plugin-vue';
 
 export default defineConfig({
-    plugins: [laravel({ input: ['resources/js/app.js'], refresh: true }), vue()],
+    publicDir: false,
+    plugins: [vue(), {
+        name: 'queue-manifest',
+        closeBundle() {
+            copyFileSync('public/build/.vite/manifest.json', 'resources/views/assets.json');
+        },
+    }],
+    build: {
+        outDir: 'public/build',
+        manifest: true,
+        rollupOptions: { input: 'resources/js/app.js' },
+    },
+    base: '/build/',
 });
