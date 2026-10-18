@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import requests
 from sqlalchemy import create_engine, event, text
+from sqlalchemy.pool import QueuePool
 from app import ROOT, create_app
 
 
@@ -130,6 +131,49 @@ class QueueTest(unittest.TestCase):
             self.assertEqual(list(executor.map(create_record, range(8))), [201] * 8)
         self.assertEqual([record['position'] for record in self.client.get('/api/deployments').json], list(range(1, 9)))
 
+    def test_listing_uses_one_select_without_writer_transaction(self):
+        self.create()
+        engine = self.app.extensions['queue_engine']
+        statements = []
+        def capture(connection, cursor, statement, parameters, context, many):
+            statements.append(statement)
+        event.listen(engine, 'before_cursor_execute', capture)
+        try:
+            # A writer must not block the periodic read of the last committed queue.
+            with engine.connect().execution_options(queue_write=True) as connection:
+                with connection.begin():
+                    connection.execute(text("UPDATE deployments SET notes='uncommitted'"))
+                    statements.clear()
+                    response = self.client.get('/api/deployments')
+                    self.assertEqual(response.status_code, 200)
+                    self.assertIsNone(response.json[0]['notes'])
+                    self.assertEqual(len(statements), 1)
+                    self.assertTrue(statements[0].startswith('SELECT'))
+                    self.assertIn('app;dur=', response.headers['Server-Timing'])
+        finally:
+            event.remove(engine, 'before_cursor_execute', capture)
+
+    def test_move_only_updates_records_with_changed_positions(self):
+        ids = [self.create().json['id'] for _ in range(4)]
+        engine = self.app.extensions['queue_engine']
+        updates = []
+        def capture(connection, cursor, statement, parameters, context, many):
+            if statement.startswith('UPDATE deployments'):
+                updates.append((parameters, many))
+        event.listen(engine, 'before_cursor_execute', capture)
+        try:
+            response = self.client.patch(f'/api/deployments/{ids[1]}/move',
+                                         json={'direction': 'up'}, headers=self.headers)
+            self.assertEqual([record['id'] for record in response.json], [ids[1], ids[0], ids[2], ids[3]])
+            self.assertEqual(len(updates), 1)
+            self.assertTrue(updates[0][1])
+            self.assertEqual(len(updates[0][0]), 2)
+            updates.clear()
+            self.client.patch(f'/api/deployments/{ids[1]}/move', json={'direction': 'up'}, headers=self.headers)
+            self.assertEqual(updates, [])
+        finally:
+            event.remove(engine, 'before_cursor_execute', capture)
+
     def test_existing_laravel_sqlite_records_are_preserved(self):
         database = Path(self.directory.name) / 'queue.sqlite'
         with sqlite3.connect(database) as connection:
@@ -164,7 +208,9 @@ class QueueTest(unittest.TestCase):
         with patch('app.create_engine', return_value=engine) as factory:
             remote = create_app(settings)
         self.assertEqual(factory.call_args.args[0], 'sqlite+libsql://queue-test.turso.io?secure=true')
-        self.assertEqual(factory.call_args.kwargs['connect_args'], {'auth_token': 'fake-token', 'isolation_level': None})
+        self.assertEqual(factory.call_args.kwargs['connect_args'], {'auth_token': 'fake-token', 'isolation_level': None, 'check_same_thread': False})
+        self.assertIs(factory.call_args.kwargs['poolclass'], QueuePool)
+        self.assertEqual(factory.call_args.kwargs['max_overflow'], 0)
         client = remote.test_client()
         self.assertEqual(client.get('/up').status_code, 200)
         client.get('/')
@@ -176,7 +222,7 @@ class QueueTest(unittest.TestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(client.get('/api/deployments').json[0]['id'], response.json['id'])
         with self.assertRaises(RuntimeError):
-            with engine.begin() as connection:
+            with engine.connect().execution_options(queue_write=True) as connection, connection.begin():
                 connection.execute(text("UPDATE deployments SET notes='rollback'"))
                 raise RuntimeError('Rollback')
         self.assertIsNone(client.get('/api/deployments').json[0]['notes'])

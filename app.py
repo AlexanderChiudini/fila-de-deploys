@@ -8,13 +8,14 @@ import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Lock
 from urllib.parse import urlsplit
 
 import requests
 from dotenv import load_dotenv
-from flask import Flask, abort, jsonify, render_template_string, request, send_from_directory, session
-from sqlalchemy import Column, Integer, MetaData, String, Table, Text, create_engine, delete, event, insert, select, text, update
-from sqlalchemy.pool import NullPool
+from flask import Flask, abort, g, jsonify, render_template_string, request, send_from_directory, session
+from sqlalchemy import Column, Integer, MetaData, String, Table, Text, bindparam, create_engine, delete, event, func, insert, select, text, update
+from sqlalchemy.pool import NullPool, QueuePool
 
 load_dotenv(encoding='utf-8-sig')
 ROOT = Path(__file__).resolve().parent
@@ -119,7 +120,9 @@ def create_app(settings: dict | None = None) -> Flask:
         if not turso_token:
             raise RuntimeError('Configure TURSO_AUTH_TOKEN para conectar ao Turso.')
         database_url = f'sqlite+libsql://{parsed.netloc}?secure=true'
-        engine_options['connect_args'] = {'auth_token': turso_token, 'isolation_level': None}
+        engine_options.update(poolclass=QueuePool, pool_size=5, max_overflow=0,
+                              pool_timeout=10, pool_recycle=60, pool_use_lifo=True)
+        engine_options['connect_args'] = {'auth_token': turso_token, 'isolation_level': None, 'check_same_thread': False}
     elif turso_token:
         raise RuntimeError('Configure TURSO_DATABASE_URL junto com TURSO_AUTH_TOKEN.')
     elif not database_url.startswith('sqlite:///'):
@@ -138,26 +141,33 @@ def create_app(settings: dict | None = None) -> Flask:
 
     @event.listens_for(engine, 'begin')
     def sqlite_begin(connection) -> None:
-        connection.exec_driver_sql('BEGIN IMMEDIATE')
+        # Reads stay in driver autocommit: no remote BEGIN/ROLLBACK or writer lock.
+        if connection.get_execution_options().get('queue_write'):
+            connection.exec_driver_sql('BEGIN IMMEDIATE')
 
     @contextmanager
     def transaction():
-        with engine.begin() as connection:
-            yield connection
+        with engine.connect() as connection:
+            connection = connection.execution_options(queue_write=True)
+            with connection.begin():
+                yield connection
 
     initialized = False
+    initialization_lock = Lock()
 
     def initialize_database() -> None:
         nonlocal initialized
-        if not initialized:
-            with transaction() as connection:
-                metadata.create_all(connection)
-            initialized = True
+        with initialization_lock:
+            if not initialized:
+                with transaction() as connection:
+                    metadata.create_all(connection)
+                initialized = True
 
     application.extensions['queue_engine'] = engine
 
     @application.before_request
     def protect_writes():
+        g.request_started = time.perf_counter()
         if request.path.startswith('/api/'):
             initialize_database()
             if request.method in ('POST', 'PATCH', 'DELETE'):
@@ -182,6 +192,8 @@ def create_app(settings: dict | None = None) -> Flask:
     def prevent_api_caching(response):
         if request.path.startswith('/api/') or request.path == '/':
             response.headers['Cache-Control'] = 'no-store'
+        if hasattr(g, 'request_started'):
+            response.headers['Server-Timing'] = f'app;dur={(time.perf_counter() - g.request_started) * 1000:.1f}'
         return response
 
     @application.errorhandler(404)
@@ -239,11 +251,11 @@ def create_app(settings: dict | None = None) -> Flask:
         if errors:
             return jsonify(message='Confira os campos informados.', errors=errors), 422
         with transaction() as connection:
-            records = ordered(connection)
+            last_position = connection.execute(select(func.max(deployments.c.position))).scalar_one()
             stamp = now()
             result = connection.execute(insert(deployments).values(
                 **({'status': 'aguardando', 'notes': None} | data),
-                position=max((record['position'] for record in records), default=0) + 1,
+                position=(last_position or 0) + 1,
                 created_at=stamp, updated_at=stamp,
             ))
             record = find(connection, result.inserted_primary_key[0])
@@ -268,8 +280,9 @@ def create_app(settings: dict | None = None) -> Flask:
                 return jsonify(message='Confira os campos informados.', errors=errors), 422
             finished = record['status'] != 'finalizado' and data.get('status') == 'finalizado'
             if data:
-                connection.execute(update(deployments).where(deployments.c.id == deployment_id).values(**data, updated_at=now()))
-            record = find(connection, deployment_id)
+                changes = dict(data, updated_at=now())
+                connection.execute(update(deployments).where(deployments.c.id == deployment_id).values(**changes))
+                record.update(changes)
         if finished:
             notify_finished(record, application)
         return jsonify(record)
@@ -277,18 +290,25 @@ def create_app(settings: dict | None = None) -> Flask:
     @application.patch('/api/deployments/<int:deployment_id>/move')
     def move(deployment_id: int):
         with transaction() as connection:
-            find(connection, deployment_id)
             data, errors = validate(request.get_json(silent=True), moving=True)
             if errors:
                 return jsonify(message='Confira os campos informados.', errors=errors), 422
             records = ordered(connection)
-            index = next(index for index, record in enumerate(records) if record['id'] == deployment_id)
+            index = next((index for index, record in enumerate(records) if record['id'] == deployment_id), None)
+            if index is None:
+                abort(404)
             target = {'up': max(0, index - 1), 'down': min(len(records) - 1, index + 1), 'end': len(records) - 1}[data['direction']]
             records.insert(target, records.pop(index))
+            changes = []
+            stamp = now()
             for position, record in enumerate(records, 1):
-                connection.execute(update(deployments).where(deployments.c.id == record['id']).values(position=position, updated_at=now()))
-            result = ordered(connection)
-        return jsonify(result)
+                if record['position'] != position:
+                    record.update(position=position, updated_at=stamp)
+                    changes.append({'record_id': record['id'], 'new_position': position, 'stamp': stamp})
+            if changes:
+                connection.execute(update(deployments).where(deployments.c.id == bindparam('record_id')).values(
+                    position=bindparam('new_position'), updated_at=bindparam('stamp')), changes)
+        return jsonify(records)
 
     return application
 

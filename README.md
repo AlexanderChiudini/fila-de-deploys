@@ -55,6 +55,16 @@ Não inclua o token no Git nem em variáveis `VITE_*`: ele é utilizado somente 
 
 Sem as variáveis Turso, o desenvolvimento local continua usando `database/database.sqlite`. Para testar com Turso no Windows, use o container Docker: o driver nativo oficial é compatível com Linux/macOS. O arquivo `requirements.txt` instala esse driver nesses ambientes, incluindo a Vercel, e mantém a instalação local Windows com SQLite padrão.
 
+## Latência na Vercel
+
+A aplicação reutiliza até cinco conexões Turso por instância, com renovação após 60 segundos. A listagem executa somente um `SELECT`, sem abrir transação de escrita. As alterações continuam usando `BEGIN IMMEDIATE` para preservar a consistência da fila. A reordenação atualiza apenas registros cuja posição mudou, e a alteração de status/observações evita uma consulta adicional ao registro.
+
+Confira a região do banco com `turso db show nome-do-banco` e configure a função Vercel próxima dessa região em **Settings → Functions → Function Regions**, seguido de uma nova publicação. Também é possível definir `"regions": ["gru1"]` no `vercel.json` **se o banco estiver em São Paulo**. Não escolha a região somente pela localização dos visitantes: cada consulta atravessa a rede entre a função e o banco. Referência: [regiões das funções Vercel](https://vercel.com/docs/functions/configuring-functions/region).
+
+As respostas incluem `Server-Timing: app;dur=...`, em milissegundos, visível na aba Network do navegador. Esse valor mede o processamento Flask, incluindo acesso ao banco e notificações, mas não a inicialização da função ou o trajeto do navegador até a Vercel. Compare a primeira requisição e as seguintes para avaliar o efeito da inicialização e da reutilização de conexões. A primeira consulta de cada instância ainda verifica/cria as tabelas. Não há cache da fila: as leituras continuam consultando o banco compartilhado.
+
+Finalizar um deploy também aguarda o webhook do Google Chat, quando habilitado. Esse tempo pode aparecer na requisição de alteração de status, mesmo quando a consulta ao banco já terminou. A latência real do Turso deve ser medida após a publicação; os testes locais usam SQLite.
+
 ## Docker
 
 Defina `SECRET_KEY` no `.env` e execute:
