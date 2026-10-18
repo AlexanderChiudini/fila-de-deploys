@@ -2,6 +2,10 @@
 
 Fila compartilhada com **Python 3.13, Flask e Vue 3**, preparada para Vercel. Mantém a interface em português, busca, filtros, contadores por status, atualização a cada 10 segundos, observações, reordenação, exclusão individual e limpeza de finalizados. As notificações opcionais do Google Chat continuam sendo enviadas somente na transição para finalizado; falhas no webhook não desfazem a alteração.
 
+## Disponível em:
+
+https://fila-de-deploys-p19m0nqk7-alex-chiudini.vercel.app/
+
 ## Executar localmente
 
 Requisitos: Python 3.13 e Node.js 22.
