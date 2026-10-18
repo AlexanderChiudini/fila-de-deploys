@@ -5,6 +5,7 @@
 node_modules
 public/build
 resources/views/assets.json
+resources/views/build
 database/*.sqlite*
 .runtime
 .venv

@@ -1,5 +1,7 @@
 import re
 import os
+import json
+import shutil
 import sqlite3
 import tempfile
 import unittest
@@ -9,7 +11,7 @@ from unittest.mock import patch
 
 import requests
 from sqlalchemy import create_engine, event, text
-from app import create_app
+from app import ROOT, create_app
 
 
 class QueueTest(unittest.TestCase):
@@ -196,6 +198,22 @@ class QueueTest(unittest.TestCase):
         with patch.dict(os.environ, {'VERCEL': '1', 'SECRET_KEY': 'test-secret'}):
             with self.assertRaisesRegex(RuntimeError, 'TURSO_DATABASE_URL'):
                 create_app(self.settings | {'TESTING': False})
+
+    def test_built_assets_work_without_public_directory_in_function(self):
+        manifest = json.loads((ROOT / 'resources/views/assets.json').read_text(encoding='utf-8'))
+        entry = manifest['resources/js/app.js']
+        bundle_root = Path(self.directory.name) / 'function'
+        shutil.copytree(ROOT / 'resources/views', bundle_root / 'resources/views')
+        self.assertFalse((bundle_root / 'public').exists())
+        with patch('app.ROOT', bundle_root):
+            page = self.client.get('/')
+            for filename, mime in [(entry['file'], 'javascript')] + [(name, 'text/css') for name in entry.get('css', [])]:
+                self.assertIn('/build/' + filename, page.text)
+                with self.client.get('/build/' + filename) as response:
+                    self.assertEqual(response.status_code, 200)
+                    self.assertIn(mime, response.content_type)
+                    self.assertGreater(len(response.data), 100)
+            self.assertEqual(self.client.get('/build/assets/missing.js').status_code, 404)
 
 
 if __name__ == '__main__':

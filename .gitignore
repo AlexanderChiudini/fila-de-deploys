@@ -17,4 +17,5 @@ __pycache__/
 *.pyc
 /.vercel
 /resources/views/assets.json
+/resources/views/build
 /python-runtime.zip

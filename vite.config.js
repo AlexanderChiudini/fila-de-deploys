@@ -1,5 +1,5 @@
 import { defineConfig } from 'vite';
-import { copyFileSync } from 'node:fs';
+import { copyFileSync, cpSync } from 'node:fs';
 import vue from '@vitejs/plugin-vue';
 
 export default defineConfig({
@@ -8,6 +8,7 @@ export default defineConfig({
         name: 'queue-manifest',
         closeBundle() {
             copyFileSync('public/build/.vite/manifest.json', 'resources/views/assets.json');
+            cpSync('public/build/assets', 'resources/views/build/assets', { recursive: true });
         },
     }],
     build: {

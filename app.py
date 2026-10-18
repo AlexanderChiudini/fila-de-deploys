@@ -201,7 +201,7 @@ def create_app(settings: dict | None = None) -> Flask:
 
     @application.get('/build/<path:filename>')
     def assets(filename: str):
-        return send_from_directory(ROOT / 'public/build', filename)
+        return send_from_directory(ROOT / 'resources/views/build', filename)
 
     @application.get('/up')
     def health():
