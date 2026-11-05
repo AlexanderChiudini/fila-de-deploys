@@ -4,7 +4,7 @@ Fila compartilhada com **Python 3.13, Flask e Vue 3**, preparada para Vercel. Ma
 
 ## Disponível em:
 
-https://fila-de-deploys-p19m0nqk7-alex-chiudini.vercel.app/
+https://fila-de-deploys.vercel.app/
 
 ## Executar localmente
 
